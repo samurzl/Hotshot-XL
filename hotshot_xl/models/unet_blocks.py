@@ -630,7 +630,12 @@ class CrossAttnUpBlock3D(nn.Module):
 
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:
-                hidden_states = upsampler(hidden_states, upsample_size)
+                if upsample_size is not None:
+                    # Adjust upsample_size to include only spatial dimensions (h, w)
+                    upsample_size_2d = upsample_size[-2:]
+                else:
+                    upsample_size_2d = None
+                hidden_states = upsampler(hidden_states, upsample_size_2d)
 
         return hidden_states
 
@@ -728,7 +733,12 @@ class UpBlock3D(nn.Module):
 
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:
-                hidden_states = upsampler(hidden_states, upsample_size)
+                if upsample_size is not None:
+                    # Adjust upsample_size to include only spatial dimensions (h, w)
+                    upsample_size_2d = upsample_size[-2:]
+                else:
+                    upsample_size_2d = None
+                hidden_states = upsampler(hidden_states, upsample_size_2d)
 
         return hidden_states
 

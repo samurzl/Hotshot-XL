@@ -16,7 +16,16 @@ class Upsample3D(Upsample2D):
     def forward(self, hidden_states, output_size=None, scale: float = 1.0):
         f = hidden_states.shape[2]
         hidden_states = rearrange(hidden_states, "b c f h w -> (b f) c h w")
-        hidden_states = super(Upsample3D, self).forward(hidden_states, output_size, scale)
+
+        if output_size is not None:
+            # Adjust output_size to match the rearranged hidden_states
+            # Since we combined batch and frames dimensions, output_size should exclude the frames dimension
+            # output_size may have three dimensions, we need to take the last two (height and width)
+            output_size_2d = output_size[-2:]
+        else:
+            output_size_2d = None
+
+        hidden_states = super(Upsample3D, self).forward(hidden_states, output_size_2d, scale)
         return rearrange(hidden_states, "(b f) c h w -> b c f h w", f=f)
 
 

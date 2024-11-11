@@ -209,6 +209,8 @@ aspect_ratio_to_1024_map = {
 res_to_aspect_map = {
     1024: aspect_ratio_to_1024_map,
     512: {key: [value[0] // 2, value[1] // 2] for key, value in aspect_ratio_to_1024_map.items()},
+    256: {key: [value[0] // 4, value[1] // 4] for key, value in aspect_ratio_to_1024_map.items()},
+    128: {key: [value[0] // 8, value[1] // 8] for key, value in aspect_ratio_to_1024_map.items()},
 }
 
 def best_aspect_ratio(aspect_ratio: float, resolution: int):

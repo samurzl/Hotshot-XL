@@ -72,6 +72,8 @@ def parse_args():
     parser.add_argument("--autocast", type=str, default=None, choices=[
         'f16', 'bf16'
     ])
+    parser.add_argument("--base_is_full_model", action='store_true')
+    parser.add_argument("--base_key_mapping", type=str, default=None)
 
     return parser.parse_args()
 
@@ -149,7 +151,7 @@ def main():
 
         unet_3d = UNet3DConditionModel.from_pretrained(args.pretrained_path, subfolder="unet", torch_dtype=data_type).to(device)
 
-        unet = UNet3DConditionModel.from_pretrained_spatial(args.spatial_unet_base).to(device, dtype=data_type)
+        unet = UNet3DConditionModel.from_pretrained_spatial(args.spatial_unet_base, base_is_full_model=args.base_is_full_model, mapping_file_path=args.base_key_mapping).to(device, dtype=data_type)
 
         temporal_layers = {}
         unet_3d_sd = unet_3d.state_dict()

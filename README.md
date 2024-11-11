@@ -31,6 +31,15 @@ Hotshot-XL was trained to generate 1 second GIFs at 8 FPS.
 
 Hotshot-XL was trained on various aspect ratios. For best results with the base Hotshot-XL model, we recommend using it with an SDXL model that has been fine-tuned with 512x512 images. You can find an SDXL model we fine-tuned for 512x512 resolutions [here](https://huggingface.co/hotshotco/SDXL-512).
 
+# THIS FORK
+
+This fork, other than fixing some bugs adds the following additional functionality:
+- temporal layers get saved in an individual safetensors file
+- 128x and 256x resolution now supported
+- spatial unets can be loaded from the full sdxl model file (--base_is_full_model)
+- when loading full model, key mapping file is needed (--base_key_mapping)
+- training can be resumed from temporal layer model file (--pretrained_temp_layer_path)
+
 # 🌐 Try It
 
 Try Hotshot-XL yourself here: https://www.hotshot.co
@@ -43,9 +52,8 @@ If you’re running Hotshot-XL yourself, you are going to be able to have a lot 
 
 ### Environment Setup
 ```
-pip install virtualenv --upgrade
-virtualenv -p $(which python3) venv
-source venv/bin/activate
+conda create -n hotshot-xl python=3.11
+conda activate hotshot-xl
 pip install -r requirements.txt
 ```
 
@@ -53,11 +61,9 @@ pip install -r requirements.txt
 
 ```
 # Make sure you have git-lfs installed (https://git-lfs.com)
-git lfs install
+# inside repository
 git clone https://huggingface.co/hotshotco/Hotshot-XL
 ```
-
-or visit [https://huggingface.co/hotshotco/Hotshot-XL](https://huggingface.co/hotshotco/Hotshot-XL)
 
 ### Download our fine-tuned SDXL model (or BYOSDXL)
 
@@ -210,25 +216,7 @@ The final checkpoint will be saved to `output_dir`.
 We've found it useful to send validation GIFs to [Weights & Biases](www.wandb.ai) every so often. If you choose to use validation with Weights & Biases, you can set how often this runs with the `validate_every_steps` parameter.
 
 ```
-accelerate launch fine_tune.py \
-    --output_dir="<OUTPUT_DIR>" \
-    --data_dir="fine_tune_dataset" \
-    --report_to="wandb" \
-    --run_validation_at_start \
-    --resolution=512 \
-    --mixed_precision=fp16 \
-    --train_batch_size=4 \
-    --learning_rate=1.25e-05 \
-    --lr_scheduler="constant" \
-    --lr_warmup_steps=0 \
-    --max_train_steps=1000 \
-    --save_n_steps=20 \
-    --validate_every_steps=50 \
-    --vae_b16 \
-    --gradient_checkpointing \
-    --noise_offset=0.05 \
-    --snr_gamma \
-    --test_prompts="man sits at a table in a cafe, he greets another man with a smile and a handshakes"
+accelerate launch fine_tune.py --output_dir="models/8f-bj-simple-512" --data_dir="datasets/8f-bj-50-simple" --report_to="wandb" --run_validation_at_start --resolution=512 --mixed_precision=bf16 --train_batch_size=4 --learning_rate=1.5e-06 --lr_scheduler="constant" --lr_warmup_steps=0 --max_train_steps=50 --save_n_steps=20 --validate_every_steps=10 --vae_b16 --gradient_checkpointing --noise_offset=0.05 --test_prompts="score_9, score_8_up, score_7_up, 1girl, blowjob" --spatial_unet_base=pony-diffusion-v6 --base_is_full_model --base_key_mapping=util/key_mapping.txt --pretrained_temp_layer_path=models/8f-bj-simple-512/temporal_layers.safetensors
 ```
 
 # 📝 Further work

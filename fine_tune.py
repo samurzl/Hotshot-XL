@@ -44,6 +44,8 @@ from torch.utils.data import Dataset, DataLoader
 from datetime import timedelta
 from accelerate.utils.dataclasses import InitProcessGroupKwargs
 from diffusers.utils import is_wandb_available
+from safetensors.torch import save_file, load_file
+from diffusers import StableDiffusionXLPipeline
 
 if is_wandb_available():
     import wandb
@@ -298,7 +300,24 @@ def parse_args():
         default=3600
     )
 
-    parser.add_argument("--snr_gamma", action="store_true")
+    parser.add_argument(
+        "--spatial_unet_base",
+        type=str,
+        default=None,
+        help="Path to the spatial UNet base model."
+    )
+
+    parser.add_argument(
+        "--pretrained_temp_layer_path",
+        type=str,
+        default=None,
+        help="Path to the temporal layers to start training from."
+    )
+
+    parser.add_argument("--base_is_full_model", action='store_true')
+    parser.add_argument("--base_key_mapping", type=str, default=None)
+
+    parser.add_argument("--snr_gamma", type=float, default=1.0)
 
     args = parser.parse_args()
 
@@ -335,6 +354,14 @@ def main():
 
     args = parse_args()
 
+    # Define model_dtype based on mixed_precision
+    if args.mixed_precision == "bf16":
+        model_dtype = torch.bfloat16
+    elif args.mixed_precision == "fp16":
+        model_dtype = torch.float16
+    else:
+        model_dtype = torch.float32
+
     next_save_iter = args.save_starting_step
 
     if args.save_starting_step < 1:
@@ -370,16 +397,31 @@ def main():
         if args.output_dir is not None:
             os.makedirs(args.output_dir, exist_ok=True)
 
-    # Load the tokenizer
-    tokenizer = CLIPTokenizer.from_pretrained(args.pretrained_model_name_or_path, subfolder="tokenizer")
-    tokenizer_2 = CLIPTokenizer.from_pretrained(args.pretrained_model_name_or_path, subfolder="tokenizer_2")
+    
+    if args.spatial_unet_base and args.base_is_full_model:
+        pipe = StableDiffusionXLPipeline.from_single_file(f"{args.spatial_unet_base}/diffusion_pytorch_model.safetensors")
+        tokenizer = pipe.tokenizer
+        tokenizer_2 = pipe.tokenizer_2
 
-    # Load models and create wrapper for stable diffusion
-    text_encoder = CLIPTextModel.from_pretrained(args.pretrained_model_name_or_path, subfolder="text_encoder")
-    text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(args.pretrained_model_name_or_path,
-                                                                 subfolder="text_encoder_2")
+        text_encoder = pipe.text_encoder
+        text_encoder_2 = pipe.text_encoder_2
 
-    vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae")
+        vae = pipe.vae
+        del pipe
+        torch.cuda.empty_cache()
+    else:
+        # Load the tokenizer from diffusers format
+        tokenizer = CLIPTokenizer.from_pretrained(args.pretrained_model_name_or_path, subfolder="tokenizer")
+        tokenizer_2 = CLIPTokenizer.from_pretrained(args.pretrained_model_name_or_path, subfolder="tokenizer_2")
+    
+        # Load models and create wrapper for stable diffusion from diffusers format
+        text_encoder = CLIPTextModel.from_pretrained(args.pretrained_model_name_or_path, subfolder="text_encoder")
+        text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(args.pretrained_model_name_or_path,
+                                                                     subfolder="text_encoder_2")
+    
+        #load vae from diffusers format
+        vae = AutoencoderKL.from_pretrained(args.pretrained_model_name_or_path, subfolder="vae")
+    
 
     optimizer_resume_path = None
 
@@ -389,13 +431,41 @@ def main():
         if os.path.exists(optimizer_fp):
             optimizer_resume_path = optimizer_fp
 
-        unet = UNet3DConditionModel.from_pretrained(args.unet_resume_path,
+        unet_3d = UNet3DConditionModel.from_pretrained(args.unet_resume_path,
                                                     subfolder="unet",
                                                     low_cpu_mem_usage=False,
                                                     device_map=None)
 
     else:
-        unet = UNet3DConditionModel.from_pretrained(args.pretrained_model_name_or_path, subfolder="unet")
+        unet_3d = UNet3DConditionModel.from_pretrained(args.pretrained_model_name_or_path, subfolder="unet")
+
+    if args.spatial_unet_base:
+        # Load the spatial UNet from spatial_unet_base
+        unet = UNet3DConditionModel.from_pretrained_spatial(args.spatial_unet_base, base_is_full_model=args.base_is_full_model, mapping_file_path=args.base_key_mapping)
+
+        # Extract temporal layers from unet_3d
+        temporal_layers = {}
+        unet_3d_sd = unet_3d.state_dict()
+        for k, v in unet_3d_sd.items():
+            if 'temporal' in k:
+                temporal_layers[k] = v
+
+        # Load the temporal layers into the spatial UNet
+        unet.load_state_dict(temporal_layers, strict=False)
+    
+        # Clean up
+        del unet_3d_sd
+        del unet_3d
+        del temporal_layers
+    else:
+        unet = unet_3d
+
+    if args.pretrained_temp_layer_path:
+        temporal_layers = load_file(args.pretrained_temp_layer_path)
+        unet.load_state_dict(temporal_layers, strict=False)
+        del temporal_layers
+    
+    unet.to(accelerator.device, dtype=model_dtype)
 
     if args.xformers:
         vae.set_use_memory_efficient_attention_xformers(True, None)
@@ -568,7 +638,7 @@ def main():
             og_size,
             crop_coords,
             (required_size[0], required_size[1]),
-            dtype=torch.float32
+            dtype=model_dtype
         ).to(device)
 
         input_ids_0 = tokenizer(
@@ -628,10 +698,10 @@ def main():
         *_, h, w = examples[0]['frames'].shape
 
         return {
-            "frames": torch.stack([x['frames'] for x in examples]).to(memory_format=torch.contiguous_format).float(),
+            "frames": torch.stack([x['frames'] for x in examples]).to(memory_format=torch.contiguous_format).to(model_dtype),
             "prompt_embeds": prompt_embeds.to(memory_format=torch.contiguous_format).float(),
             "pooled_prompt_embeds": pooled_prompt_embeds,
-            "additional_time_ids": torch.stack([x['additional_time_ids'] for x in examples]),
+            "additional_time_ids": torch.stack([x['additional_time_ids'] for x in examples]).to(model_dtype),
         }
 
     # Region - Dataloaders
@@ -736,8 +806,8 @@ def main():
 
     # Move text_encode and vae to gpu.
     vae.to(accelerator.device, dtype=torch.bfloat16 if args.vae_b16 else torch.float32)
-    text_encoder.to(accelerator.device)
-    text_encoder_2.to(accelerator.device)
+    text_encoder.to(accelerator.device, dtype=model_dtype)
+    text_encoder_2.to(accelerator.device, dtype=model_dtype)
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
 
@@ -796,6 +866,19 @@ def main():
                 text_encoder_2=text_encoder_2,
                 vae=vae,
             ).save_pretrained(args.output_dir, safe_serialization=True)
+
+            # Extract the custom state_dict before ending training
+            custom_state_dict = accelerator.unwrap_model(unet).state_dict()
+            temp_temp_layers = {}
+            for k, v in custom_state_dict.items():
+                    if 'temporal' in k:
+                        temp_temp_layers[k] = v
+            
+            # Save the custom state_dict as a .safetensors file
+            output_path = f"{args.output_dir}/temporal_layers.safetensors"
+            save_file(temp_temp_layers, output_path)
+            logger.info(f"Custom state_dict saved to {output_path}")
+        
         accelerator.wait_for_everyone()
 
     def compute_loss_from_batch(batch: dict):
@@ -840,7 +923,7 @@ def main():
 
             torch.cuda.empty_cache()
 
-            noise = torch.randn_like(latents, device=latents.device)
+            noise = torch.randn_like(latents, device=latents.device, dtype=model_dtype)
 
             if args.noise_offset:
                 # https://www.crosslabs.org//blog/diffusion-with-offset-noise

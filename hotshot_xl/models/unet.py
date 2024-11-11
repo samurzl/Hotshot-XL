@@ -888,7 +888,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             # if we have not reached the final block and need to forward the
             # upsample size, we do it here
             if not is_final_block and forward_upsample_size:
-                upsample_size = down_block_res_samples[-1].shape[2:]
+                upsample_size = down_block_res_samples[-1].shape[-2:]
 
             if hasattr(upsample_block, "has_cross_attention") and upsample_block.has_cross_attention:
                 sample = upsample_block(
@@ -924,7 +924,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         return UNet3DConditionOutput(sample=sample)
 
     @classmethod
-    def from_pretrained_spatial(cls, pretrained_model_path, subfolder=None):
+    def from_pretrained_spatial(cls, pretrained_model_path, subfolder=None, base_is_full_model=False, mapping_file_path=None):
 
         import os
         import json
@@ -977,6 +977,36 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         else:
             state_dict = torch.load(model_file, map_location="cpu")
 
+        # Load the key mapping if base_is_full_model is True
+        if base_is_full_model and mapping_file_path is not None:
+            key_mapping = load_key_mapping(mapping_file_path)
+            state_dict = map_keys(state_dict, key_mapping)
+
         model.load_state_dict(state_dict, strict=False)
 
         return model
+
+def load_key_mapping(mapping_file_path):
+    """
+    Loads the key mapping from a text file with format 'key1:key2' per line.
+    Returns a dictionary with key1 as the key and key2 as the value.
+    """
+    mapping = {}
+    with open(mapping_file_path, 'r') as f:
+        for line in f:
+            key1, key2 = line.strip().split(":")
+            mapping[key1] = key2
+    return mapping
+
+def map_keys(state_dict, key_mapping):
+    """
+    Maps the keys in the state_dict based on the provided key_mapping.
+    Returns a new state_dict with the keys replaced.
+    """
+    new_state_dict = {}
+    for key, value in state_dict.items():
+        # Replace the key if it's in the key_mapping
+        new_key = key_mapping.get(key)
+        if new_key is not None:
+            new_state_dict[new_key] = value
+    return new_state_dict

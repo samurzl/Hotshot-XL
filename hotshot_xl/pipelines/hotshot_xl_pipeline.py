@@ -977,13 +977,20 @@ class HotshotXLPipeline(DiffusionPipeline, FromSingleFileMixin, LoraLoaderMixin)
 
     def decode_latents(self, latents):
         video_length = latents.shape[2]
-        latents = 1 / self.vae.config.scaling_factor * latents
+        scaling_factor = torch.tensor(
+            1 / self.vae.config.scaling_factor,
+            dtype=latents.dtype,
+            device=latents.device
+        )
+        latents = scaling_factor * latents
         latents = rearrange(latents, "b c f h w -> (b f) c h w")
         # video = self.vae.decode(latents).sample
         video = []
         for frame_idx in tqdm(range(latents.shape[0])):
-            video.append(self.vae.decode(
-                latents[frame_idx:frame_idx+1]).sample)
+            # Ensure latents are in the correct dtype before decoding
+            frame_latents = latents[frame_idx:frame_idx+1].to(dtype=self.vae.dtype, device=self.vae.device)
+            decoded_frame = self.vae.decode(frame_latents).sample
+            video.append(decoded_frame)
         video = torch.cat(video)
         video = rearrange(video, "(b f) c h w -> b c f h w", f=video_length)
         video = (video / 2.0 + 0.5).clamp(0, 1)
