@@ -845,12 +845,22 @@ def main():
     latents_scaler = vae.config.scaling_factor
 
     def save_checkpoint():
+        print("SAVING CHECKPOIINT")
         save_dir = Path(args.output_dir)
         save_dir = str(save_dir)
         save_dir = save_dir.replace(" ", "_")
         if not os.path.exists(save_dir):
             os.makedirs(save_dir, exist_ok=True)
         accelerator.save_state(save_dir)
+        custom_state_dict = accelerator.unwrap_model(unet).state_dict()
+        temp_temp_layers = {}
+        for k, v in custom_state_dict.items():
+            if 'temporal' in k:
+                temp_temp_layers[k] = v
+        # Save the custom state_dict as a .safetensors file
+        output_path = f"{args.output_dir}/temporal_layers_{global_step}.safetensors"
+        save_file(temp_temp_layers, output_path)
+        logger.info(f"Custom state_dict saved to {output_path}")
 
     def save_checkpoint_and_wait():
         if accelerator.is_main_process:
@@ -1026,6 +1036,17 @@ def main():
                 run_validation(step=global_step, node_index=accelerator.process_index // 8)
 
             accelerator.wait_for_everyone()
+
+        if global_step % args.save_n_steps == 0:
+            custom_state_dict = accelerator.unwrap_model(unet).state_dict()
+            temp_temp_layers = {}
+            for k, v in custom_state_dict.items():
+                if 'temporal' in k:
+                    temp_temp_layers[k] = v
+            # Save the custom state_dict as a .safetensors file
+            output_path = f"{args.output_dir}/temporal_layers_{global_step}.safetensors"
+            save_file(temp_temp_layers, output_path)
+            logger.info(f"Custom state_dict saved to {output_path}")
 
         for key, val in logging_data.items():
             logs[key] = val
