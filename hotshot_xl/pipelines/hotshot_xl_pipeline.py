@@ -49,6 +49,7 @@ from einops import repeat, rearrange
 from diffusers.utils import deprecate, logging
 import gc
 from PIL import Image
+from torchvision import transforms
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -558,7 +559,7 @@ class HotshotXLPipeline(DiffusionPipeline, FromSingleFileMixin, LoraLoaderMixin)
             self.vae.decoder.conv_in.to(dtype)
             self.vae.decoder.mid_block.to(dtype)
 
-    def encode_initial_image(self, initial_image: str) -> torch.FloatTensor:
+    def encode_initial_image(self, initial_image: str, height, width) -> torch.FloatTensor:
         """
         Encodes the initial image into latent space using the VAE.
 
@@ -579,6 +580,7 @@ class HotshotXLPipeline(DiffusionPipeline, FromSingleFileMixin, LoraLoaderMixin)
 
         # Define the same transformations used during training
         image_transforms = transforms.Compose([
+            transforms.Resize((height, width)),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),
         ])
@@ -843,7 +845,9 @@ class HotshotXLPipeline(DiffusionPipeline, FromSingleFileMixin, LoraLoaderMixin)
         # Handle initial_image
         if initial_image is not None:
             # Encode the initial image to latent
-            initial_latent1,initial_latent2,initial_latent3,initial_latent4 = self.encode_initial_image(initial_image)  # Shape: (1, C, 1, H', W')
+            initial_latent1,initial_latent2,initial_latent3,initial_latent4 = self.encode_initial_image(initial_image, height, width)  # Shape: (1, C, 1, H', W')
+            print(initial_latent1.shape)
+            print(latents.shape)
             latents[:, :, 0, :, :] = initial_latent1[:, :, 0, :, :]
             latents[:, :, 1, :, :] = initial_latent2[:, :, 0, :, :]
             latents[:, :, 2, :, :] = initial_latent3[:, :, 0, :, :]
