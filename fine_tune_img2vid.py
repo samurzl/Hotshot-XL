@@ -801,7 +801,7 @@ def main():
 
             for prompt in prompts:
                 
-                video = pipe(prompt,width=w,height=h,original_size=(1920, 1080),target_size=(args.resolution, args.resolution),num_inference_steps=30,video_length=8,output_type="tensor",generator=torch.Generator().manual_seed(777),initial_image=args.initial_image_path,alpha=args.alpha).videos
+                video = pipe(prompt,width=w,height=h,original_size=(1920, 1080),target_size=(args.resolution, args.resolution),num_inference_steps=30,video_length=8,output_type="tensor",generator=torch.Generator().manual_seed(777),initial_image=args.initial_image_path).videos
 
                 videos.append(to_images(video))
 

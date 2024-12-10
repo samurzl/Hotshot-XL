@@ -48,6 +48,7 @@ from tqdm import tqdm
 from einops import repeat, rearrange
 from diffusers.utils import deprecate, logging
 import gc
+from PIL import Image
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
@@ -557,6 +558,50 @@ class HotshotXLPipeline(DiffusionPipeline, FromSingleFileMixin, LoraLoaderMixin)
             self.vae.decoder.conv_in.to(dtype)
             self.vae.decoder.mid_block.to(dtype)
 
+    def encode_initial_image(self, initial_image: str) -> torch.FloatTensor:
+        """
+        Encodes the initial image into latent space using the VAE.
+
+        Args:
+            initial_image (`str` or `PIL.Image.Image` or `torch.FloatTensor`):
+                The image to encode. Can be a file path, a PIL Image, or a pre-encoded tensor.
+
+        Returns:
+            torch.FloatTensor: The encoded latent tensor of shape (1, C, 1, H', W').
+        """
+        if isinstance(initial_image, str):
+            image1 = Image.open(f"{initial_image}/1.png").convert("RGB")
+            image2 = Image.open(f"{initial_image}/2.png").convert("RGB")
+            image3 = Image.open(f"{initial_image}/3.png").convert("RGB")
+            image4 = Image.open(f"{initial_image}/4.png").convert("RGB")
+        else:
+            print("initial image is not a file path")
+
+        # Define the same transformations used during training
+        image_transforms = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize([0.5], [0.5]),
+        ])
+
+        image1 = image_transforms(image1).unsqueeze(0).to(self.vae.device)  # Shape: (1, 3, H, W)
+        image2 = image_transforms(image2).unsqueeze(0).to(self.vae.device)
+        image3 = image_transforms(image3).unsqueeze(0).to(self.vae.device)
+        image4 = image_transforms(image4).unsqueeze(0).to(self.vae.device)
+
+        # Encode the image to latent space
+        latent1 = self.vae.encode(image1.to(dtype=self.vae.dtype)).latent_dist.sample().float() * self.vae.config.scaling_factor  # Shape: (1, C, H', W')
+        latent2 = self.vae.encode(image2.to(dtype=self.vae.dtype)).latent_dist.sample().float() * self.vae.config.scaling_factor
+        latent3 = self.vae.encode(image3.to(dtype=self.vae.dtype)).latent_dist.sample().float() * self.vae.config.scaling_factor
+        latent4 = self.vae.encode(image4.to(dtype=self.vae.dtype)).latent_dist.sample().float() * self.vae.config.scaling_factor
+
+        # Reshape latent to match (batch_size, channels, frames, height, width)
+        latent1 = rearrange(latent1, "(b) c h w -> b c 1 h w", b=latent1.shape[0])  # Shape: (1, C, 1, H', W')
+        latent2 = rearrange(latent2, "(b) c h w -> b c 1 h w", b=latent2.shape[0])
+        latent3 = rearrange(latent3, "(b) c h w -> b c 1 h w", b=latent3.shape[0])
+        latent4 = rearrange(latent4, "(b) c h w -> b c 1 h w", b=latent4.shape[0])
+
+        return latent1, latent2, latent3, latent4
+
     @torch.no_grad()
     @replace_example_docstring(EXAMPLE_DOC_STRING)
     def __call__(
@@ -588,7 +633,8 @@ class HotshotXLPipeline(DiffusionPipeline, FromSingleFileMixin, LoraLoaderMixin)
         original_size: Optional[Tuple[int, int]] = None,
         crops_coords_top_left: Tuple[int, int] = (0, 0),
         target_size: Optional[Tuple[int, int]] = None,
-        low_vram_mode: Optional[bool] = False
+        low_vram_mode: Optional[bool] = False,
+        initial_image: Optional[Union[str, Image.Image, torch.FloatTensor]] = None,  # New Parameter
     ):
         r"""
         Function invoked when calling the pipeline for generation.
@@ -783,16 +829,25 @@ class HotshotXLPipeline(DiffusionPipeline, FromSingleFileMixin, LoraLoaderMixin)
         # 5. Prepare latent variables
         num_channels_latents = self.unet.config.in_channels
         latents = self.prepare_latents(
-            batch_size * num_images_per_prompt,
-            num_channels_latents,
-            video_length,
-            height,
-            width,
-            prompt_embeds.dtype,
-            device,
-            generator,
-            latents,
-        )
+                batch_size * num_images_per_prompt,
+                num_channels_latents,
+                video_length,
+                height,
+                width,
+                prompt_embeds.dtype,
+                device,
+                generator,
+                latents,
+            )
+        
+        # Handle initial_image
+        if initial_image is not None:
+            # Encode the initial image to latent
+            initial_latent1,initial_latent2,initial_latent3,initial_latent4 = self.encode_initial_image(initial_image)  # Shape: (1, C, 1, H', W')
+            latents[:, :, 0, :, :] = initial_latent1[:, :, 0, :, :]
+            latents[:, :, 1, :, :] = initial_latent2[:, :, 0, :, :]
+            latents[:, :, 2, :, :] = initial_latent3[:, :, 0, :, :]
+            latents[:, :, 3, :, :] = initial_latent4[:, :, 0, :, :]
 
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -859,6 +914,19 @@ class HotshotXLPipeline(DiffusionPipeline, FromSingleFileMixin, LoraLoaderMixin)
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
 
+                # If initial_image is provided, ensure the first frame's latent remains unchanged
+                if initial_image is not None:
+                    # Extract the initial latent
+                    initial_latent_expanded1 = initial_latent1.repeat(latents.shape[0], 1, 1, 1, 1)  # Shape: (batch_size*num_images_per_prompt, C, 1, H', W')
+                    initial_latent_expanded2 = initial_latent2.repeat(latents.shape[0], 1, 1, 1, 1)
+                    initial_latent_expanded3 = initial_latent3.repeat(latents.shape[0], 1, 1, 1, 1)
+                    initial_latent_expanded4 = initial_latent4.repeat(latents.shape[0], 1, 1, 1, 1)
+                    # Replace the first frame's latent with the initial latent
+                    latents[:, :, 0, :, :] = initial_latent_expanded1[:, :, 0, :, :]
+                    latents[:, :, 1, :, :] = initial_latent_expanded2[:, :, 0, :, :]
+                    latents[:, :, 2, :, :] = initial_latent_expanded3[:, :, 0, :, :]
+                    latents[:, :, 3, :, :] = initial_latent_expanded4[:, :, 0, :, :]
+                
                 # call the callback, if provided
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
